@@ -6,6 +6,9 @@ import os
 from pprint import pprint
 from abc import ABC, abstractmethod
 
+# See https://developers.homebridge.io/#/service/ for a rough
+# outline of the inspiration behind this module.
+
 class ApiException(RuntimeError):
 	pass
 
@@ -17,7 +20,10 @@ class UselessService(RuntimeError):
 	pass
 
 class Homie:
-	
+	"""
+	Represents a homebridge. Has accessories, which have properties that
+	can be modified.
+	"""
 	refresh_time = 30.0
 	
 	def __init__(self, host, port, auth, **kwargs):
@@ -32,11 +38,15 @@ class Homie:
 		self.load_accessories()
 	
 	def load_accessories(self):
+		"""
+		loads the list of accessories and their subsequent properties.
+		"""
 		r = requests.get(self._base + 'accessories', headers=self._headers)
 		if r.status_code != 200:
 			raise ApiException('Got unexpected response code %d' % r.status_code)
 		
 		self._last_update = time.time()
+		self._accessories = []
 		
 		j = None
 		try:
@@ -55,11 +65,17 @@ class Homie:
 	
 	@property
 	def accessories(self):
+		"""
+		gets a list of accessories on this homebridge
+		"""
 		if time.time() > self._last_update + self.refresh_time:
 			self.load_accessories()
 		return self._accessories
 	
 	def __getitem__(self, key):
+		"""
+		case-insensitively gets accessories by name.
+		"""
 		if time.time() > self._last_update + self.refresh_time:
 			self.load_accessories()
 		for x in self._accessories:
@@ -68,6 +84,18 @@ class Homie:
 		raise KeyError(key)
 
 class Accessory:
+	"""
+	Represents an accessory in a homebridge.
+	
+	In practice, accessories have services, which have characteristics.
+	Accessory attempts to abstract this away. Characteristics are made
+	available if/when provided by services, and can be accessed as properties
+	of the accessory, for both getting and setting.
+	
+	E.g.
+	# an accessory, acc - a dimming lightbulb
+	acc.brightness = 40
+	"""
 	def __init__(self, data, homie):
 		self.__dict__['_base'] = homie._base
 		self.__dict__['_headers'] = homie._headers
@@ -90,6 +118,15 @@ class Accessory:
 		return self._name
 	
 	def setChar(self, iid, val, tries=3):
+		"""
+		Sets a characteristic for the given accessory through homebridge's API.
+		Makes up to tries tries if an unexpected status code comes back.
+		
+		:param iid: the identifier for the characteristic.
+		:param val: the new value for the characteristic.
+		:param tries: Max tries against the API.
+		:return: True if the request was successful, else False.
+		"""
 		for i in range(tries):
 			r = requests.put(self._base + 'characteristics', headers=self._headers,
 				json={'characteristics': [{'aid': self._aid, 'iid': iid, 'value': val}]})
@@ -103,6 +140,9 @@ class Accessory:
 			time.sleep(2**i)
 	
 	def turnOn(self, val=1):
+		"""
+		Specialized setChar for the "On" characteristic.
+		"""
 		for x in self._services:
 			if iid := getattr(x, 'onIid', None):
 				self.setChar(iid, val)
@@ -112,6 +152,10 @@ class Accessory:
 		self.turnOn(0)
 	
 	def __setattr__(self, name, val):
+		"""
+		Updates values both internally and over the API for the requested
+		property.
+		"""
 		if name == 'on':
 			return self.turnOn(int(val))
 		
@@ -138,7 +182,20 @@ class Accessory:
 		return s[:-1] + ')'
 
 class Service(ABC):
+	"""
+	Represents a service in an accessory in homebridge.
+	Seldom directly interacted with - the service will add properties
+	to its parent accessory, which will be used to update them.
+	
+	As such, Service is primarily used for parsing service and characteristic
+	data from the homebridge API. Once parsed, it serves little purpose.
+	"""
 	def make(data, parent):
+		"""
+		Returns a specialized service based on the type specified in the API
+		data. This type is the nonzero portion of the first segment of the
+		service type's UUID.
+		"""
 		# my types:
 		# {'112', '4A', '110', '3E', 'E863F007-079E-48FF-8F27-9C2605A29F52', '43', '49', 'A2'}
 		dtype = data.get('type')
